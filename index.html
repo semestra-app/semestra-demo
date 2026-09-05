@@ -143,6 +143,15 @@
 
   /* ---------- Filter bar ---------- */
   .filter-bar { display: flex; gap: var(--space-2); margin-bottom: var(--space-5); flex-wrap: wrap; align-items: center; }
+
+  .date-range-bar { display: flex; gap: 8px; margin: -8px 0 var(--space-5); flex-wrap: wrap; }
+  .date-range-btn {
+    padding: 7px 16px; border-radius: var(--radius-pill); border: 1px solid var(--color-border);
+    background: var(--color-surface); color: var(--color-text-muted); font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: all .12s ease;
+  }
+  .date-range-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+  .date-range-btn.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
   .filter-select {
     font-family: var(--font-body);
     font-size: 13px;
@@ -191,6 +200,20 @@
   .page-btn.active { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
   @media (max-width: 600px) { .assignments-pagination { justify-content: center; } .pagination-info { order: 2; width: 100%; text-align: center; } }
   .table-wrap table.assignments-table { min-width: 880px; }
+
+  .section-header-row { }
+  tr.section-header-row td {
+    font-size: 12.5px; font-weight: 700; padding: 10px 16px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  tr.section-header-row.overdue td { background: rgba(192,69,58,0.08); color: var(--color-danger); }
+  tr.section-header-row.upcoming td { background: var(--color-subtle); color: var(--color-text-muted); }
+  div.section-header-row {
+    font-size: 12px; font-weight: 700; padding: 8px 14px; margin: 4px 0 8px;
+    border-radius: var(--radius-sm); text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  div.section-header-row.overdue { background: rgba(192,69,58,0.1); color: var(--color-danger); }
+  div.section-header-row.upcoming { background: var(--color-subtle); color: var(--color-text-muted); margin-top: 14px; }
   table.assignments-table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .assignments-table thead th { text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-faint); font-weight: 600; padding: 13px 16px; border-bottom: 1px solid var(--color-border); background: var(--color-subtle); white-space: nowrap; }
   .assignments-table tbody td { padding: 15px 16px; border-bottom: 1px solid var(--color-border); vertical-align: middle; color: var(--color-text); }
@@ -840,6 +863,13 @@
     <select class="filter-select" id="filterStatus"><option value="">All statuses</option></select>
     <select class="filter-select" id="filterPriority"><option value="">All priorities</option></select>
     <input type="text" class="search-input" id="searchInput" placeholder="Search assignments...">
+  </div>
+
+  <div class="date-range-bar" id="dateRangeBar">
+    <button class="date-range-btn" data-range="">All</button>
+    <button class="date-range-btn" data-range="today">Today</button>
+    <button class="date-range-btn active" data-range="week">This Week</button>
+    <button class="date-range-btn" data-range="month">This Month</button>
   </div>
 
   <div class="table-wrap desktop-only">
@@ -1620,7 +1650,7 @@
         const d = new Date(today); d.setDate(d.getDate() + offset);
         demoAssignments.push({
           id: 'a' + counter++, courseId, type, title,
-          dueDate: d.toISOString().slice(0,10), dueTime: '23:59',
+          dueDate: toISODate(d), dueTime: '23:59',
           status, priority, notes: '', grade, weight,
         });
       });
@@ -1931,7 +1961,7 @@
   // ASSIGNMENTS VIEW
   // ================================================================
   let editingAssignmentId = null;
-  const filters = { course: '', type: '', status: '', priority: '', search: '' };
+  const filters = { course: '', type: '', status: '', priority: '', search: '', dateRange: 'week' };
   const ASSIGNMENTS_PER_PAGE = 20;
   let assignmentsPage = 1;
 
@@ -1992,7 +2022,7 @@
   }
 
   function getFilteredAssignments() {
-    return assignments.filter(a => {
+    const filtered = assignments.filter(a => {
       if (filters.course && a.courseId !== filters.course) return false;
       if (filters.type && a.type !== filters.type) return false;
       if (filters.status && a.status !== filters.status) return false;
@@ -2002,12 +2032,35 @@
         if (!hay.includes(filters.search.toLowerCase())) return false;
       }
       return true;
-    }).sort((a, b) => {
-      // Guarded against any legacy/incomplete records — never crash the sort.
+    });
+
+    const today = toISODate(new Date());
+    const isOverdue = a => a.status !== 'completed' && a.dueDate && a.dueDate < today;
+
+    const overdue = filtered.filter(isOverdue).sort((a, b) => {
       const ka = (a.dueDate || '') + (a.dueTime || '');
       const kb = (b.dueDate || '') + (b.dueTime || '');
       return String(ka).localeCompare(String(kb));
     });
+
+    // Everything else starts from today and moves forward; assignments
+    // with no due date have nothing to be "near", so they sink to the end
+    // instead of floating to the top (an empty string would otherwise sort first).
+    const rest = filtered.filter(a => !isOverdue(a)).sort((a, b) => {
+      const ka = a.dueDate ? a.dueDate + (a.dueTime || '') : '9999-12-31';
+      const kb = b.dueDate ? b.dueDate + (b.dueTime || '') : '9999-12-31';
+      return String(ka).localeCompare(String(kb));
+    });
+
+    let restFiltered = rest;
+    if (filters.dateRange) {
+      const windowDays = { today: 0, week: 6, month: 29 }[filters.dateRange];
+      const endDate = new Date(); endDate.setDate(endDate.getDate() + windowDays);
+      const endISO = toISODate(endDate);
+      restFiltered = rest.filter(a => a.dueDate && a.dueDate >= today && a.dueDate <= endISO);
+    }
+
+    return { overdue, rest: restFiltered };
   }
 
   const tableBody = document.getElementById('tableBody');
@@ -2052,60 +2105,92 @@
     return `<span class="days-left normal">In ${d} day${d!==1?'s':''}</span>`;
   }
 
-  function renderAssignmentsView() {
-    const fullList = getFilteredAssignments();
-    emptyNote.style.display = fullList.length === 0 ? 'block' : 'none';
+  function buildAssignmentRow(a) {
+    const course = courseById(a.courseId);
+    const type = TYPE_META[a.type] || { label: a.type || '—', icon: '' };
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><div class="cell-course"><span class="course-dot" style="background:${course ? course.color : '#ccc'};"></span>${course ? escapeHtml(course.name) : '—'}</div></td>
+      <td class="cell-type">${type.icon} ${type.label}</td>
+      <td class="cell-title">${escapeHtml(a.title)}</td>
+      <td>${a.dueDate ? formatDate(a.dueDate) : '—'}</td>
+      <td>${formatTime(a.dueTime)}</td>
+      <td>${statusSelectHtml(a)}</td>
+      <td>${prioritySelectHtml(a)}</td>
+      <td>${daysLeftHtml(a)}</td>
+      <td><button class="row-menu-btn" data-id="${a.id}">⋯</button></td>
+    `;
+    tr.querySelector('.row-menu-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleAssignmentMenu(a.id, e.currentTarget); });
+    return tr;
+  }
 
-    const totalPages = Math.max(1, Math.ceil(fullList.length / ASSIGNMENTS_PER_PAGE));
+  function buildAssignmentCard(a) {
+    const course = courseById(a.courseId);
+    const type = TYPE_META[a.type] || { label: a.type || '—', icon: '' };
+    const overdue = a.status !== 'completed' && a.dueDate && daysLeft(a.dueDate) < 0;
+    const card = document.createElement('div');
+    card.className = 'assignment-card' + (overdue ? ' overdue' : '');
+    card.style.setProperty('--course-color', course ? course.color : '#ccc');
+    card.innerHTML = `
+      <button class="row-menu-btn ac-menu" data-id="${a.id}">⋯</button>
+      <div class="ac-top-row">
+        <div class="ac-course"><span class="course-dot" style="background:${course ? course.color : '#ccc'};"></span>${course ? escapeHtml(course.name) : '—'}</div>
+        <div class="ac-type">${type.icon} ${type.label}</div>
+      </div>
+      <div class="ac-title">${escapeHtml(a.title)}</div>
+      <div class="ac-mid-row">
+        <div class="ac-datetime">${a.dueDate ? formatDate(a.dueDate) : '—'} · ${formatTime(a.dueTime)}</div>
+        ${statusSelectHtml(a)}
+      </div>
+      <div class="ac-bottom-row">${prioritySelectHtml(a)}${daysLeftHtml(a)}</div>
+    `;
+    card.querySelector('.row-menu-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleAssignmentMenu(a.id, e.currentTarget); });
+    return card;
+  }
+
+  function renderAssignmentsView() {
+    const { overdue, rest } = getFilteredAssignments();
+    emptyNote.style.display = (overdue.length + rest.length) === 0 ? 'block' : 'none';
+
+    const totalPages = Math.max(1, Math.ceil(rest.length / ASSIGNMENTS_PER_PAGE));
     if (assignmentsPage > totalPages) assignmentsPage = totalPages;
     const startIdx = (assignmentsPage - 1) * ASSIGNMENTS_PER_PAGE;
-    const list = fullList.slice(startIdx, startIdx + ASSIGNMENTS_PER_PAGE);
+    const pageSlice = rest.slice(startIdx, startIdx + ASSIGNMENTS_PER_PAGE);
+    const showOverdueSection = overdue.length > 0 && assignmentsPage === 1;
 
     tableBody.innerHTML = '';
-    list.forEach(a => {
-      const course = courseById(a.courseId);
-      const type = TYPE_META[a.type] || { label: a.type || '—', icon: '' };
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td><div class="cell-course"><span class="course-dot" style="background:${course ? course.color : '#ccc'};"></span>${course ? escapeHtml(course.name) : '—'}</div></td>
-        <td class="cell-type">${type.icon} ${type.label}</td>
-        <td class="cell-title">${escapeHtml(a.title)}</td>
-        <td>${a.dueDate ? formatDate(a.dueDate) : '—'}</td>
-        <td>${formatTime(a.dueTime)}</td>
-        <td>${statusSelectHtml(a)}</td>
-        <td>${prioritySelectHtml(a)}</td>
-        <td>${daysLeftHtml(a)}</td>
-        <td><button class="row-menu-btn" data-id="${a.id}">⋯</button></td>
-      `;
-      tr.querySelector('.row-menu-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleAssignmentMenu(a.id, e.currentTarget); });
-      tableBody.appendChild(tr);
-    });
+    cardList.innerHTML = '';
+
+    if (showOverdueSection) {
+      const overdueHeaderRow = document.createElement('tr');
+      overdueHeaderRow.className = 'section-header-row overdue';
+      overdueHeaderRow.innerHTML = `<td colspan="9">⚠️ Overdue (${overdue.length})</td>`;
+      tableBody.appendChild(overdueHeaderRow);
+      overdue.forEach(a => tableBody.appendChild(buildAssignmentRow(a)));
+
+      const overdueHeaderCard = document.createElement('div');
+      overdueHeaderCard.className = 'section-header-row overdue';
+      overdueHeaderCard.textContent = `⚠️ Overdue (${overdue.length})`;
+      cardList.appendChild(overdueHeaderCard);
+      overdue.forEach(a => cardList.appendChild(buildAssignmentCard(a)));
+
+      if (rest.length > 0) {
+        const upcomingHeaderRow = document.createElement('tr');
+        upcomingHeaderRow.className = 'section-header-row upcoming';
+        upcomingHeaderRow.innerHTML = `<td colspan="9">Starting Today</td>`;
+        tableBody.appendChild(upcomingHeaderRow);
+
+        const upcomingHeaderCard = document.createElement('div');
+        upcomingHeaderCard.className = 'section-header-row upcoming';
+        upcomingHeaderCard.textContent = 'Starting Today';
+        cardList.appendChild(upcomingHeaderCard);
+      }
+    }
+
+    pageSlice.forEach(a => tableBody.appendChild(buildAssignmentRow(a)));
     wireInlineEditSelects(tableBody);
 
-    cardList.innerHTML = '';
-    list.forEach(a => {
-      const course = courseById(a.courseId);
-      const type = TYPE_META[a.type] || { label: a.type || '—', icon: '' };
-      const overdue = a.status !== 'completed' && a.dueDate && daysLeft(a.dueDate) < 0;
-      const card = document.createElement('div');
-      card.className = 'assignment-card' + (overdue ? ' overdue' : '');
-      card.style.setProperty('--course-color', course ? course.color : '#ccc');
-      card.innerHTML = `
-        <button class="row-menu-btn ac-menu" data-id="${a.id}">⋯</button>
-        <div class="ac-top-row">
-          <div class="ac-course"><span class="course-dot" style="background:${course ? course.color : '#ccc'};"></span>${course ? escapeHtml(course.name) : '—'}</div>
-          <div class="ac-type">${type.icon} ${type.label}</div>
-        </div>
-        <div class="ac-title">${escapeHtml(a.title)}</div>
-        <div class="ac-mid-row">
-          <div class="ac-datetime">${a.dueDate ? formatDate(a.dueDate) : '—'} · ${formatTime(a.dueTime)}</div>
-          ${statusSelectHtml(a)}
-        </div>
-        <div class="ac-bottom-row">${prioritySelectHtml(a)}${daysLeftHtml(a)}</div>
-      `;
-      card.querySelector('.row-menu-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleAssignmentMenu(a.id, e.currentTarget); });
-      cardList.appendChild(card);
-    });
+    pageSlice.forEach(a => cardList.appendChild(buildAssignmentCard(a)));
     wireInlineEditSelects(cardList);
 
     const total = assignments.length;
@@ -2119,7 +2204,7 @@
     const dueThisWeek = assignments.filter(a => a.status !== 'completed' && a.dueDate && daysLeft(a.dueDate) >= 0 && daysLeft(a.dueDate) <= 7).length;
     document.getElementById('metaStatsLine').textContent = `${total} assignments · ${dueThisWeek} due this week`;
 
-    renderAssignmentsPagination(fullList.length, totalPages);
+    renderAssignmentsPagination(rest.length, totalPages);
   }
 
   function renderAssignmentsPagination(totalItems, totalPages) {
@@ -2206,7 +2291,7 @@
     titleInput.value = '';
     assignCourseInput.value = courses.find(c => !c.archived)?.id || '';
     typeInput.value = 'homework';
-    dueDateInput.value = new Date().toISOString().slice(0,10);
+    dueDateInput.value = toISODate(new Date());
     dueTimeInput.value = '23:59';
     statusInput.value = 'not-started';
     priorityInput.value = 'medium';
@@ -2270,6 +2355,15 @@
   document.getElementById('filterPriority').addEventListener('change', (e) => { filters.priority = e.target.value; assignmentsPage = 1; renderAssignmentsView(); });
   document.getElementById('searchInput').addEventListener('input', (e) => { filters.search = e.target.value; assignmentsPage = 1; renderAssignmentsView(); });
 
+  document.querySelectorAll('.date-range-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      filters.dateRange = btn.dataset.range;
+      assignmentsPage = 1;
+      document.querySelectorAll('.date-range-btn').forEach(b => b.classList.toggle('active', b === btn));
+      renderAssignmentsView();
+    });
+  });
+
   // ================================================================
   // TO-DO LIST VIEW
   // ================================================================
@@ -2290,7 +2384,7 @@
     if (localStorage.getItem(WIPED_KEY) === 'true') return;
     if (loadTodos().length > 0) return;
     const today = new Date();
-    const iso = (offsetDays) => { const d = new Date(today); d.setDate(d.getDate() + offsetDays); return d.toISOString().slice(0,10); };
+    const iso = (offsetDays) => { const d = new Date(today); d.setDate(d.getDate() + offsetDays); return toISODate(d); };
     const demoTodos = [
       { id: 't1', title: 'Buy textbooks for next semester', category: 'school', dueDate: iso(0), dueTime: '10:00', completed: false },
       { id: 't2', title: 'Schedule advising appointment', category: 'appointments', dueDate: iso(0), dueTime: '14:00', completed: false },
@@ -2368,7 +2462,7 @@
     list.forEach(t => {
       const meta = CATEGORY_META[t.category] || { label: t.category, bg: '#EDEEF0', fg: '#6B7280' };
       const today = new Date(); today.setHours(0,0,0,0);
-      const isToday = t.dueDate === today.toISOString().slice(0,10);
+      const isToday = t.dueDate === toISODate(today);
       const row = document.createElement('div');
       row.className = 'todo-row' + (t.completed ? ' completed' : '');
       row.innerHTML = `
@@ -2391,7 +2485,7 @@
 
     const dueTodayCount = todos.filter(t => {
       const today = new Date(); today.setHours(0,0,0,0);
-      return !t.completed && t.dueDate === today.toISOString().slice(0,10);
+      return !t.completed && t.dueDate === toISODate(today);
     }).length;
     todoStatsLine.textContent = `${todos.length} task${todos.length !== 1 ? 's' : ''} · ${dueTodayCount} due today`;
 
@@ -2485,7 +2579,7 @@
     saveTodoBtn.textContent = 'Add Task';
     todoTitleInput.value = '';
     todoCategoryInput.value = 'personal';
-    todoDueDateInput.value = new Date().toISOString().slice(0,10);
+    todoDueDateInput.value = toISODate(new Date());
     todoDueTimeInput.value = '12:00';
     todoOverlay.classList.add('open');
     todoTitleInput.focus();
@@ -2954,7 +3048,7 @@
     if (localStorage.getItem(WIPED_KEY) === 'true') return;
     if (loadCalendarEntries().length > 0) return;
     const today = new Date();
-    const iso = (offsetDays) => { const d = new Date(today); d.setDate(d.getDate() + offsetDays); return d.toISOString().slice(0,10); };
+    const iso = (offsetDays) => { const d = new Date(today); d.setDate(d.getDate() + offsetDays); return toISODate(d); };
     const demoEntries = [
       { id: 'ce1', title: "Doctor's appointment", description: 'Annual check-up. Bring insurance card.', date: iso(2), time: '14:00' },
       { id: 'ce2', title: 'Career Fair', description: 'Bring resumes, business casual.', date: iso(5), time: '11:00' },
@@ -2973,7 +3067,17 @@
   let monthSelectedDate = new Date(calendarRefDate); // which day is highlighted in Month view's grid
   let editingEntryId = null;
 
-  function toISODate(d) { const dt = new Date(d); dt.setHours(0,0,0,0); return dt.toISOString().slice(0,10); }
+  // Builds a YYYY-MM-DD string from the LOCAL date components (never UTC).
+  // .toISOString() converts to UTC, which silently shifts the date by a day
+  // for anyone not in the UTC+0 timezone (e.g. it would show "yesterday" in
+  // the evening/night for any timezone ahead of UTC) — this avoids that.
+  function toISODate(d) {
+    const dt = new Date(d);
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const day = String(dt.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
   function isSameDate(a, b) { return toISODate(a) === toISODate(b); }
   function getMonday(d) { const day = d.getDay(); const diff = (day === 0 ? -6 : 1 - day); const m = new Date(d); m.setDate(d.getDate() + diff); m.setHours(0,0,0,0); return m; }
 
@@ -3417,9 +3521,10 @@
   // DASHBOARD
   // ================================================================
   function stripHtml(html) {
+    const spaced = html.replace(/<\/(li|p|div)>/gi, '$& ').replace(/<br\s*\/?>/gi, ' ');
     const div = document.createElement('div');
-    div.innerHTML = html;
-    return div.textContent || '';
+    div.innerHTML = spaced;
+    return (div.textContent || '').replace(/\s+/g, ' ').trim();
   }
 
   function describeArc(cx, cy, r, startFrac, endFrac) {
@@ -3550,7 +3655,7 @@
 
     // Recent notes
     const recentNotesEl = document.getElementById('dashRecentNotes');
-    const sortedNotes = [...notes].sort((a, b) => (b.pinned - a.pinned) || (b.updatedAt - a.updatedAt)).slice(0, 3);
+    const sortedNotes = [...notes].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3);
     if (sortedNotes.length === 0) {
       recentNotesEl.innerHTML = `<div class="dash-empty-mini">No notes yet.</div>`;
     } else {
